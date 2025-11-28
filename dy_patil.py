@@ -3,6 +3,7 @@
 # Streamlit SSD300 Object Detection App
 # Downloads checkpoint from Google Drive using gdown (first run only)
 # Robustly loads either checkpoint['model'] OR a raw state_dict
+# Works with PyTorch >= 2.6 by explicitly setting weights_only=False
 # ---------------------------
 
 import os
@@ -67,9 +68,8 @@ def build_model_from_state_dict(state_dict: dict) -> torch.nn.Module:
 
     # Try strict load first, fall back to non-strict with a warning
     try:
-        missing, unexpected = model.load_state_dict(state_dict, strict=True)
-        # PyTorch >= 2 returns (missing_keys, unexpected_keys) in newer APIs; older returns None
-    except Exception as e:
+        model.load_state_dict(state_dict, strict=True)
+    except Exception:
         st.warning("Strict load failed—trying non‑strict load. "
                    "This usually means the checkpoint keys differ slightly.")
         model.load_state_dict(state_dict, strict=False)
@@ -88,23 +88,27 @@ def load_model():
     Supports:
       - checkpoint['model'] saved as a whole model object
       - raw state_dict (optionally under checkpoint['state_dict'])
+    NOTE: PyTorch 2.6 default weights_only=True breaks unpickling model objects.
+          We set weights_only=False explicitly since you trust your own checkpoint.
     """
     url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
 
-    # Download once if file not found
+    # Download once if file not found (or incomplete)
     if not os.path.exists(CHECKPOINT_LOCAL) or os.path.getsize(CHECKPOINT_LOCAL) < 10_000:
         with st.spinner("Downloading model checkpoint from Google Drive..."):
             gdown.download(url, CHECKPOINT_LOCAL, quiet=False)
 
     # Load checkpoint from disk
     try:
-        ckpt = torch.load(CHECKPOINT_LOCAL, map_location=device)
+        # Critical fix: allow full unpickling of your saved model object
+        ckpt = torch.load(CHECKPOINT_LOCAL, map_location=device, weights_only=False)
     except Exception as e:
         st.error("❌ Failed to read the checkpoint file. "
                  "Please re-check the Google Drive link sharing (Anyone with the link).")
-        raise e
+        st.exception(e)
+        raise
 
-    # Case 1: full checkpoint dict with a 'model' entry
+    # Case 1: full checkpoint dict with a 'model' entry (your case)
     if isinstance(ckpt, dict) and "model" in ckpt:
         model = ckpt["model"].to(device)
         model.eval()
@@ -132,13 +136,7 @@ def load_model():
 try:
     model = load_model()
     st.success("Model loaded ✅")
-except Exception as e:
-    st.error(
-        "❌ Unable to load model checkpoint.\n\n"
-        "Check that your Google Drive file is public (Anyone with the link) "
-        "and the file ID is correct."
-    )
-    st.exception(e)
+except Exception:
     st.stop()
 
 # ---------------------------
